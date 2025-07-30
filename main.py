@@ -1,10 +1,12 @@
 """
-Main application entry point for the LLM-powered document query system - FIXED VERSION.
+Main application entry point for the LLM-powered document query system - RAILWAY VERSION.
 """
 
 import asyncio
 import uvicorn
 import logging
+import os
+from pathlib import Path
 
 from app.api.v1.endpoints.hackrx import router as hackrx_router
 from app.api.v1.endpoints.health import router as health_router
@@ -22,6 +24,23 @@ logger = logging.getLogger(__name__)
 
 # Get settings
 settings = get_settings()
+
+# Create data directories if they don't exist (for Railway)
+def ensure_directories():
+    """Ensure required directories exist."""
+    directories = [
+        settings.DATA_DIR,
+        settings.EMBEDDINGS_DIR,
+        settings.PROCESSED_DOCS_DIR,
+        settings.CACHE_DIR,
+        "./logs"
+    ]
+    for directory in directories:
+        Path(directory).mkdir(parents=True, exist_ok=True)
+        logger.info(f"Ensured directory exists: {directory}")
+
+# Ensure directories exist
+ensure_directories()
 
 # Create FastAPI app
 app = FastAPI(
@@ -47,9 +66,18 @@ app.include_router(health_router, prefix="", tags=["health"])
 @app.on_event("startup")
 async def startup_event():
     """Initialize application on startup."""
-    logger.info("Starting LLM Document Query System")
+    logger.info("Starting LLM Document Query System on Railway")
     logger.info(f"Debug mode: {settings.DEBUG}")
     logger.info(f"API running on {settings.API_HOST}:{settings.API_PORT}")
+    
+    # Initialize database first
+    try:
+        from app.database import init_database
+        await init_database()
+        logger.info("✅ Database initialized successfully")
+    except Exception as e:
+        logger.error(f"❌ Failed to initialize database: {e}")
+        logger.warning("Application will continue but database functionality may be limited")
     
     # Initialize embedding engine during startup when event loop is running
     try:
@@ -59,7 +87,6 @@ async def startup_event():
         logger.info("✅ Embedding engine initialized successfully")
     except Exception as e:
         logger.error(f"❌ Failed to initialize embedding engine: {e}")
-        # Don't raise - let the app start but log the error
         logger.warning("Application will continue but embedding functionality may be limited")
 
 @app.on_event("shutdown")
@@ -67,7 +94,13 @@ async def shutdown_event():
     """Cleanup on shutdown."""
     logger.info("Shutting down LLM Document Query System")
     
-    # Optional: Add cleanup for caches, database connections, etc.
+    try:
+        from app.database import close_database
+        await close_database()
+        logger.info("Database connections closed")
+    except Exception as e:
+        logger.warning(f"Error closing database: {e}")
+    
     try:
         from app.api.v1.dependencies import get_cache_service
         cache_service = get_cache_service()
@@ -78,11 +111,14 @@ async def shutdown_event():
         logger.warning(f"Error closing cache service: {e}")
 
 if __name__ == "__main__":
+    # Railway provides PORT environment variable
+    port = int(os.environ.get("PORT", settings.API_PORT))
+    
     uvicorn.run(
         "main:app",
-        host=settings.API_HOST,
-        port=settings.API_PORT,
-        workers=settings.API_WORKERS,
-        reload=settings.DEBUG,
-        log_config=None  # Use our custom logging config
+        host="0.0.0.0",  # Always bind to all interfaces on Railway
+        port=port,
+        workers=1,  # Railway handles scaling, use single worker
+        reload=False,  # Never use reload in production
+        log_config=None
     )
